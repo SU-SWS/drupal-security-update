@@ -72,8 +72,7 @@ for meta in "$OUT"/config/*/meta.json; do
     clone -q --filter=blob:none --no-tags --branch "$base" "$(printf "${CLONE_URL_TEMPLATE:-https://github.com/%s.git}" "$repo")" "$dir"
   git -C "$dir" config credential.helper ''
   git -C "$dir" config --add credential.helper '!gh auth git-credential'
-  git -C "$dir" config user.name "GitHub Actions"
-  git -C "$dir" config user.email "sws-developers@lists.stanford.edu"
+  # The workflow sets the commit identity globally (SWS Bots).
 
   if git -C "$dir" apply --check -R -p1 "$patch" 2> /dev/null; then
     echo "$repo $base already has these config changes; no pull request needed."

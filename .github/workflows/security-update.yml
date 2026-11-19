@@ -297,6 +297,13 @@ jobs:
       - name: Put the project's drush on PATH
         run: echo "$GITHUB_WORKSPACE/vendor/bin" >> "$GITHUB_PATH"
 
+      # Global, because sws:artifact:deploy commits in a new repository under
+      # its artifact directory, and config-pr.sh commits in fresh clones.
+      - name: Set the git identity
+        run: |
+          git config --global user.name "SWS Bots"
+          git config --global user.email "sws-developers@lists.stanford.edu"
+
       - name: Composer cache
         uses: actions/cache@v4
         with:
@@ -436,8 +443,6 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
           FINGERPRINT: ${{ steps.update.outputs.fingerprint }}
         run: |
-          git config user.name "GitHub Actions"
-          git config user.email "sws-developers@lists.stanford.edu"
           git switch -q -c "security/$VERSION"
 
           # Config the updates changed: commit it, or patch the package.
