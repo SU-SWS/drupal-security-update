@@ -16,8 +16,10 @@
 # when several site repositories need the same change in a shared package,
 # they share one pull request; later ones add a comment to it.
 #
-# Optional environment: PROD_TAG, RUN_URL, CLONE_URL_TEMPLATE (printf
-# template for clone URLs, default https://github.com/%s.git; for testing).
+# Optional environment: PROD_TAG, RUN_URL, PR_ASSIGNEE (GitHub login, or
+# several separated by commas, to assign each pull request to),
+# CLONE_URL_TEMPLATE (printf template for clone URLs, default
+# https://github.com/%s.git; for testing).
 
 set -euo pipefail
 
@@ -26,6 +28,18 @@ VERSION="${2:?}"
 TAG="${3:?}"
 : "${GH_TOKEN:?GH_TOKEN must be set}"
 SITE_REPO="${GITHUB_REPOSITORY:-this repository}"
+
+# Assign a pull request to PR_ASSIGNEE, if set. Only a warning on failure
+# (for example, the person can't be assigned in that repository), so the
+# pull request still counts as opened.
+assign() {
+  [[ -n "${PR_ASSIGNEE:-}" ]] || return 0
+  if gh pr edit "$1" --add-assignee "$PR_ASSIGNEE" > /dev/null; then
+    echo "Assigned $1 to $PR_ASSIGNEE"
+  else
+    echo "::warning::Couldn't assign $1 to $PR_ASSIGNEE."
+  fi
+}
 
 for meta in "$OUT"/config/*/meta.json; do
   [[ -f "$meta" ]] || continue
@@ -62,6 +76,7 @@ for meta in "$OUT"/config/*/meta.json; do
   if [[ -n "$existing" ]]; then
     gh pr comment "$existing" --body "Also needed by \`$SITE_REPO\` for its \`$VERSION\` security update (\`$TAG\`)${RUN_URL:+: $RUN_URL}." > /dev/null
     echo "Commented on $existing"
+    assign "$existing"
     echo "$package $existing" >> "$OUT/config-prs.txt"
     continue
   fi
@@ -148,6 +163,7 @@ for meta in "$OUT"/config/*/meta.json; do
     --title "Config changes from database updates in a security update" \
     --body-file "$body")
   echo "Opened $url"
+  assign "$url"
   echo "$package $url" >> "$OUT/config-prs.txt"
   rm -rf "$dir"
 done

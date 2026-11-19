@@ -68,6 +68,16 @@ Pass them with `secrets: inherit`.
 | `STANFORD_ENCRYPT` | Optional. Set as an environment variable for sites whose settings need it. |
 | `TOOLS_TOKEN` | Only if this repository is private: read access to it. |
 
+### Variables
+
+Set them on the site repository or its organization (Settings → Secrets and
+variables → Actions → Variables). The shared workflow reads the calling
+repository's variables, so the caller doesn't pass them.
+
+| Variable | Does |
+|---|---|
+| `CONFIG_PR_ASSIGNEE` | Optional. GitHub login (or several, comma-separated) to assign the package config pull requests to, including existing ones a later run comments on. If the person can't be assigned in that repository, the run only warns. |
+
 ## Multisites
 
 The test considers `sites` (input), else `command.sws.options.multisites` in
@@ -101,6 +111,10 @@ each changed sync directory:
 - **A run that finds a hotfix already built** for the same advisories on the
   same production tag stops. To rebuild, delete that version's ref
   (`git push origin :refs/security/<version>`); it isn't deployed.
+- **A hotfix whose artifact push failed** (its ref exists but its Acquia tag
+  doesn't) is built again by the next run, from its saved source and under the
+  same version, for the applications missing the tag. Deleting its
+  `security/<version>` branch doesn't matter; the run restores it.
 - **Try changes with `dry-run`.** It builds the artifacts but pushes nothing,
   opens no pull requests and posts nothing to Slack.
 

@@ -32,7 +32,9 @@
 #     c. Choose the version: the base version plus the next free +N
 #        (7.0.3 -> 7.0.3+1), counting tags here, security/* branches,
 #        refs/security/* and the Acquia tags. Stop if an earlier run already
-#        built a fix for the same advisories on the same production tag.
+#        built a fix for the same advisories on the same production tag. If
+#        that run saved the source but its Acquia tag is missing (it failed
+#        while building), build that saved source again under its version.
 #     d. Test the update (scripts/test-update.sh): install one site per
 #        install profile and config sync directory on the production code,
 #        switch to the updated code, run the database updates and deploy
@@ -399,10 +401,30 @@ jobs:
           for ref in $(git for-each-ref --format='%(refname)' "refs/security/$base+*"); do
             msg=$(git log -1 --format=%B "$ref")
             if grep -qx "Production-Ref: $PROD_TAG" <<< "$msg" && grep -qx "Security-Fingerprint: $FINGERPRINT" <<< "$msg"; then
-              # Production still runs $PROD_TAG, so that version isn't
-              # deployed and deleting its ref is safe.
-              echo "::notice::${ref#refs/security/} already fixes these advisories for $PROD_TAG. Deploy its Acquia tag, or run 'git push origin :$ref' to rebuild."
-              echo "skip=1" >> "$GITHUB_OUTPUT"
+              v="${ref#refs/security/}"
+              # The source ref is pushed before the artifact, so a run that
+              # failed while building leaves the ref without an Acquia tag.
+              missing=()
+              for url in $GIT_URLS; do
+                [[ -n "$(git ls-remote --tags "$url" "*_$v")" ]] || missing+=("$url")
+              done
+              if (( ${#missing[@]} == 0 )); then
+                # Production still runs $PROD_TAG, so that version isn't
+                # deployed and deleting its ref is safe.
+                echo "::notice::$v already fixes these advisories for $PROD_TAG. Deploy its Acquia tag, or run 'git push origin :$ref' to rebuild."
+                echo "skip=1" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              # Build the saved source again, under the same version, for the
+              # git URLs that don't have its tag. The commit step switches to
+              # that source, so the ref and any tag already pushed still match.
+              echo "::notice::$v fixes these advisories for $PROD_TAG, but its artifact isn't on ${missing[*]}. Building it again."
+              {
+                echo "version=$v"
+                echo "tag=$(date -u +%Y-%m-%d)_$v"
+                echo "rebuild=1"
+                echo "build_urls=${missing[*]}"
+              } >> "$GITHUB_OUTPUT"
               exit 0
             fi
           done
@@ -418,8 +440,11 @@ jobs:
           )
           version="$base+$(( ${n:-0} + 1 ))"
           echo "Hotfix version $version (production is $current)"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=$(date -u +%Y-%m-%d)_$version" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=$version"
+            echo "tag=$(date -u +%Y-%m-%d)_$version"
+            echo "build_urls=$GIT_URLS"
+          } >> "$GITHUB_OUTPUT"
 
       # Step 2d. Leaves the updated code installed.
       - name: Test the update on sites
@@ -442,6 +467,7 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
           FINGERPRINT: ${{ steps.update.outputs.fingerprint }}
+          REBUILD: ${{ steps.version.outputs.rebuild }}
         run: |
           git switch -q -c "security/$VERSION"
 
@@ -501,6 +527,12 @@ jobs:
             echo "Security-Fingerprint: $FINGERPRINT"
           } > "$REPORT_DIR/commit-message.txt"
           git commit -q -F "$REPORT_DIR/commit-message.txt"
+          if [[ -n "$REBUILD" ]]; then
+            # Rebuilding an earlier run's hotfix: use its saved source, which
+            # has the same fixes, instead of this new commit.
+            git reset -q --hard "refs/security/$VERSION"
+            echo "Rebuilding the source saved in refs/security/$VERSION:"
+          fi
           git show --stat HEAD
 
       # drush comes from vendor/; this also applies new config patches,
@@ -519,7 +551,15 @@ jobs:
         if: steps.update.outputs.result == 'fixed' && !steps.version.outputs.skip && !env.DRY_RUN
         env:
           VERSION: ${{ steps.version.outputs.version }}
-        run: git push origin "HEAD:refs/heads/security/$VERSION" "HEAD:refs/security/$VERSION"
+          REBUILD: ${{ steps.version.outputs.rebuild }}
+        run: |
+          if [[ -n "$REBUILD" ]]; then
+            # refs/security/$VERSION already holds this commit; restore the
+            # branch in case it was deleted.
+            git push origin "HEAD:refs/heads/security/$VERSION"
+          else
+            git push origin "HEAD:refs/heads/security/$VERSION" "HEAD:refs/security/$VERSION"
+          fi
 
       # Step 2g. Exports the commit with git archive, runs composer install
       # --no-dev (applying patches) and the post-build script from
@@ -530,9 +570,12 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
           TAG: ${{ steps.version.outputs.tag }}
+          # Every git URL for this production tag, or on a rebuild only those
+          # missing the version's tag.
+          BUILD_URLS: ${{ steps.version.outputs.build_urls }}
         run: |
           args=()
-          for url in $GIT_URLS; do args+=("--git-url=$url"); done
+          for url in $BUILD_URLS; do args+=("--git-url=$url"); done
           vendor/bin/drush sws:artifact:deploy \
             --tag="$TAG" \
             --commit-msg="$VERSION" \
@@ -548,6 +591,10 @@ jobs:
           GH_TOKEN: ${{ secrets.CONFIG_PR_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
           TAG: ${{ steps.version.outputs.tag }}
+          # Optional GitHub login(s), comma-separated, to assign the pull
+          # requests to. A reusable workflow reads variables from the calling
+          # repository, so set it there or on its organization.
+          PR_ASSIGNEE: ${{ vars.CONFIG_PR_ASSIGNEE }}
         run: |
           if [[ -z "$GH_TOKEN" ]]; then
             echo "::warning::CONFIG_PR_TOKEN isn't set; open the package pull requests by hand from the config patches in the report."
