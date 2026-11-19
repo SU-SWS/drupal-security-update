@@ -184,10 +184,10 @@ jobs:
       count: ${{ steps.find.outputs.count }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Get the scripts
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ inputs.tools-repository }}
           ref: ${{ inputs.tools-ref }}
@@ -255,7 +255,7 @@ jobs:
     steps:
       # Full history and tags, to find the source commit and existing +N.
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -265,7 +265,7 @@ jobs:
         run: git fetch -q origin '+refs/security/*:refs/security/*'
 
       - name: Get the scripts
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ${{ inputs.tools-repository }}
           ref: ${{ inputs.tools-ref }}
@@ -305,7 +305,7 @@ jobs:
           git config --global user.email "sws-developers@lists.stanford.edu"
 
       - name: Composer cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/composer
           key: composer-${{ hashFiles('composer.lock') }}
@@ -313,7 +313,7 @@ jobs:
 
       - name: Set up SSH for Acquia
         id: ssh
-        uses: webfactory/ssh-agent@v0.9.0
+        uses: webfactory/ssh-agent@v0.10.0
         with:
           ssh-private-key: ${{ secrets.ACQUIA_SSH_PRIVATE_KEY }}
 
@@ -596,17 +596,19 @@ jobs:
             --arg advisories "$advisories" \
             --arg updates "$updates" \
             --arg run "$RUN_URL" '
+            # Slack rejects the whole message if a text is over 3000 characters.
+            def cap: if length > 2900 then .[:2900] + "\n…(see the workflow run)" else . end;
             {
               text: "Security update ready to deploy: \($tag)",
               blocks: [
                 { type: "header", text: { type: "plain_text", text: "Security update ready to deploy" } },
-                { type: "section", text: { type: "mrkdwn", text: "*Tag:* `\($tag)`\n*Replaces:* `\($prod)`\n*Applications:* \($apps)\n*Repository:* \($repo)" } },
-                { type: "section", text: { type: "mrkdwn", text: "*Updated dependencies:*\n\($packages)" } },
-                { type: "section", text: { type: "mrkdwn", text: $updates } },
-                { type: "context", elements: [ { type: "mrkdwn", text: "Fixes \($advisories)· <\($run)|Workflow run>" } ] }
+                { type: "section", text: { type: "mrkdwn", text: ("*Tag:* `\($tag)`\n*Replaces:* `\($prod)`\n*Applications:* \($apps)\n*Repository:* \($repo)" | cap) } },
+                { type: "section", text: { type: "mrkdwn", text: ("*Updated dependencies:*\n\($packages)" | cap) } },
+                { type: "section", text: { type: "mrkdwn", text: ($updates | cap) } },
+                { type: "context", elements: [ { type: "mrkdwn", text: (("Fixes \($advisories)" | cap) + " · <\($run)|Workflow run>") } ] }
               ]
             }' > "$REPORT_DIR/slack.json"
-          curl -fsS -X POST -H 'Content-Type: application/json' --data @"$REPORT_DIR/slack.json" "$SLACK_WEBHOOK_URL"
+          curl -sS --fail-with-body -X POST -H 'Content-Type: application/json' --data @"$REPORT_DIR/slack.json" "$SLACK_WEBHOOK_URL"
 
       # Step 2h, on failure. New steps need an id and a line in OUTCOMES.
       - name: Notify Slack of a failure
@@ -649,18 +651,20 @@ jobs:
           fi
           details=$(slack_escape <<< "$details")
           jq -n --arg details "$details" --arg log "$log" --arg run "$RUN_URL" '
+            # Slack rejects the whole message if a text is over 3000 characters.
+            def cap: if length > 2900 then .[:2900] + "\n…" else . end;
             {
               text: "Production security update failed",
               blocks: ([
                 { type: "header", text: { type: "plain_text", text: ":x: Production security update failed" } },
-                { type: "section", text: { type: "mrkdwn", text: $details } }
+                { type: "section", text: { type: "mrkdwn", text: ($details | cap) } }
               ] + (if $log == "" then [] else [
-                { type: "section", text: { type: "mrkdwn", text: ("```" + $log + "```") } }
+                { type: "section", text: { type: "mrkdwn", text: ("```" + (if ($log | length) > 2800 then "…" + $log[-2800:] else $log end) + "```") } }
               ] end) + [
                 { type: "context", elements: [ { type: "mrkdwn", text: "<\($run)|Workflow run>" } ] }
               ])
             }' > "$REPORT_DIR/slack-failure.json"
-          curl -fsS -X POST -H 'Content-Type: application/json' --data @"$REPORT_DIR/slack-failure.json" "$SLACK_WEBHOOK_URL"
+          curl -sS --fail-with-body -X POST -H 'Content-Type: application/json' --data @"$REPORT_DIR/slack-failure.json" "$SLACK_WEBHOOK_URL"
 
       - name: Summary
         if: always()
@@ -732,7 +736,7 @@ jobs:
 
       - name: Upload report
         if: always() && steps.update.outputs.result
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.report.outputs.name }}
           path: |
