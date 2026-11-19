@@ -56,7 +56,7 @@ candidates="${SITES:-}"
 [[ -n "${candidates//[[:space:]]/}" ]] || candidates=default
 : > "$OUT/tested-sites.txt"
 declare -A seen=()
-while read -r site; do
+while read -r site <&3; do
   [[ -n "$site" ]] || continue
   profile=$(site_profile "$site")
   sync=$("${DRUSH[@]}" --uri="$site" status --fields=config-sync --format=string)
@@ -67,20 +67,30 @@ while read -r site; do
   fi
   seen[$key]="$site"
   echo "$site $profile $sync" >> "$OUT/tested-sites.txt"
-done <<< "$candidates"
+done 3<<< "$candidates"
 mapfile -t SITES_TESTED < <(cut -d' ' -f1 "$OUT/tested-sites.txt")
 echo "Testing: ${SITES_TESTED[*]}"
 
-for site in "${SITES_TESTED[@]}"; do
+: > "$OUT/tested-sites.installed"
+while read -r site profile _sync <&3; do
   dir="$OUT/sites/$site"
   mkdir -p "$dir"
   echo "::group::Install $site on the production code"
-  "${DRUSH[@]}" drupal:install --site="$site"
+  # drupal:install reads the profile from the site's sws.yml, then the
+  # project.profile drush config. Defining project.profile makes it install
+  # the profile site_profile found, which may come from
+  # command.site.install.profile instead.
+  "${DRUSH[@]}" -Dproject.profile="$profile" drupal:install --site="$site"
   "${DRUSH[@]}" --uri="$site" config:import
   "${DRUSH[@]}" --uri="$site" config:export --destination="$dir/config-before"
   "${DRUSH[@]}" --uri="$site" sql:dump --result-file="$dir/production.sql"
+  # Some settings choose the sync directory from the installed profile, which
+  # they read from the database, so read it again now that there is one.
+  sync=$("${DRUSH[@]}" --uri="$site" status --fields=config-sync --format=string)
+  echo "$site $profile $sync" >> "$OUT/tested-sites.installed"
   echo "::endgroup::"
-done
+done 3< "$OUT/tested-sites.txt"
+mv "$OUT/tested-sites.installed" "$OUT/tested-sites.txt"
 
 echo "::group::Install the updated code"
 cp "$OUT/composer.lock.new" composer.lock
@@ -129,7 +139,7 @@ composer show --path --format=json | jq -r '.installed[] | select(.path) | "\(.p
 
 : > "$OUT/config-changes.md"
 n=0
-while read -r site _profile sync; do
+while read -r site _profile sync <&3; do
   dir="$OUT/sites/$site"
   # "<status> <path>" per changed file, relative to the export root.
   changed=$(
@@ -216,7 +226,7 @@ while read -r site _profile sync; do
   else
     rm -rf "$cdir"
   fi
-done < "$OUT/tested-sites.txt"
+done 3< "$OUT/tested-sites.txt"
 
 if [[ -s "$OUT/config-changes.md" ]]; then
   echo "::warning::The database updates changed configuration; see config-changes.md."

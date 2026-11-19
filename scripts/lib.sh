@@ -35,7 +35,9 @@ site_profile() {
     profile=$(DRUSH_YML="docroot/sites/$site/sws.yml" drush_yml site.profile)
   fi
   [[ -n "$profile" && "$profile" != null ]] || profile=$(drush_yml project.profile)
-  echo "${profile:-stanford_profile}"
+  [[ -n "$profile" && "$profile" != null ]] || profile=$(drush_yml command.site.install.profile)
+  [[ -n "$profile" && "$profile" != null ]] || profile=stanford_profile
+  echo "$profile"
 }
 
 # Escape text for Slack mrkdwn.

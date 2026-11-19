@@ -47,7 +47,7 @@ The site repository needs:
 | `ref-source` | Uses | Secrets |
 |---|---|---|
 | `cloud` (default) | The Cloud Platform API: the `acquia-environment` (default `prod`) of each application in `acquia-apps`, defaulting to `command.sws.options.app-id` in `drush/drush.yml`. | `ACQUIA_API_KEY`, `ACQUIA_API_SECRET` |
-| `acsf` | The Site Factory API at `acsf-url`. | `ACSF_USER`, `ACSF_KEY` |
+| `acsf` | The Site Factory API at `acsf-url`, for the stack `acsf-stack-id` (default `1`). | `ACSF_USER`, `ACSF_KEY` |
 | either, with `prod-ref` | The given tag, pushed to every `git-url` in `drush/drush.yml`. | none |
 
 If several applications run the same code, list them all in `acquia-apps`.
@@ -72,7 +72,8 @@ Pass them with `secrets: inherit`.
 
 The test considers `sites` (input), else `command.sws.options.multisites` in
 `drush/drush.yml`, else `default`. Sites that share an install profile (from the
-site's `sws.yml`, then `project.profile`) and a config sync directory get the
+site's `sws.yml`, then `project.profile`, then
+`command.site.install.profile`) and a config sync directory get the
 same updates, so only the first of each group is installed and updated.
 
 ## Config the updates change
