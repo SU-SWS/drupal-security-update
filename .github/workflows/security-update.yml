@@ -291,6 +291,12 @@ jobs:
       - name: Point "mysql" at the database service
         run: echo "127.0.0.1 mysql" | sudo tee -a /etc/hosts
 
+      # Some drush commands (drupal:install, the sws:multisite:* commands) run
+      # child processes as a bare `drush`, so the project's drush must be on
+      # PATH for every later step.
+      - name: Put the project's drush on PATH
+        run: echo "$GITHUB_WORKSPACE/vendor/bin" >> "$GITHUB_PATH"
+
       - name: Composer cache
         uses: actions/cache@v4
         with:

@@ -42,6 +42,8 @@ OUT="${1:?Usage: $0 <report-dir> <version>}"
 VERSION="${2:?Usage: $0 <report-dir> <version>}"
 DRUSH=(vendor/bin/drush --yes)
 ROOT=$(pwd)
+# drupal:install runs child processes as a bare `drush`.
+export PATH="$ROOT/vendor/bin:$PATH"
 
 cp composer.lock "$OUT/composer.lock.new"
 
