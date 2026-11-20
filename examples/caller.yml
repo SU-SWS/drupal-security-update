@@ -24,9 +24,11 @@ on:
         type: boolean
         default: false
 
-# Pushes security/* branches and refs/security/* to this repository.
+# Pushes security/* branches and refs/security/* to this repository, and
+# opens pull requests here for config committed in this repository.
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   security-update:

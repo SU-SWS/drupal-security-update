@@ -27,6 +27,7 @@ workflow describes each step.
   - `find-production.sh` with `PROD_REF` set.
   - `config-pr.sh` with a stub `gh` on `PATH` and `CLONE_URL_TEMPLATE` pointing at local bare
     repositories.
+  - `hotfix-pr.sh` with a stub `gh` on `PATH`.
 - **Don't run `test-update.sh` against a real site:** it reinstalls sites and drops their
   databases. Test the full workflow with a caller's `dry-run` input.
 - **Check syntax** with `bash -n scripts/*.sh` and by parsing the workflow YAML.

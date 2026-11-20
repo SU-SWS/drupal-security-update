@@ -16,7 +16,9 @@ For each production tag it:
 5. commits a hotfix version (`7.0.3` → `7.0.3+1`), pushes it to a
    `security/<version>` branch and pushes the built artifact to Acquia as
    `YYYY-MM-DD_7.0.3+1`;
-6. posts to Slack: the tag, updated dependencies, database updates, config pull
+6. opens a pull request from `security/<version>` to the default branch, to
+   review the composer changes and run the site's automated tests;
+7. posts to Slack: the tag, updated dependencies, database updates, the pull
    requests, or what failed.
 
 The header of [`.github/workflows/security-update.yml`](.github/workflows/security-update.yml)
@@ -28,6 +30,15 @@ Copy [`examples/caller.yml`](examples/caller.yml) to
 `.github/workflows/security-update.yml` in the site repository, choose a
 `ref-source`, and add the secrets. The schedule only runs from the site's
 default branch.
+
+The caller grants `contents: write` (for `security/*` branches) and
+`pull-requests: write` (for pull requests in the site repository). The hotfix
+pull request uses `CONFIG_PR_TOKEN` when it can, so the site's tests start.
+The site-repository config pull request, and the hotfix one without that
+token, use the workflow's own token: the repository's or organization's
+Actions settings must allow "GitHub Actions to create and approve pull
+requests", and GitHub doesn't start other workflows for them (push to the
+branch, or close and reopen the pull request, to run the tests).
 
 The site repository needs:
 
@@ -63,7 +74,7 @@ Pass them with `secrets: inherit`.
 | `ACQUIA_SSH_PRIVATE_KEY` | Reading and pushing the Acquia git repositories (dry runs read too). |
 | `ACQUIA_API_KEY`, `ACQUIA_API_SECRET` | `ref-source: cloud`. |
 | `ACSF_USER`, `ACSF_KEY` | `ref-source: acsf`. |
-| `CONFIG_PR_TOKEN` | Optional. Contents and pull request write access to packages that hold config, such as install profiles. Without it, open those pull requests by hand from the report. |
+| `CONFIG_PR_TOKEN` | Optional. Contents and pull request write access to packages that hold config, such as install profiles, **and to the site repository**. It pushes `security/<version>` and opens the hotfix pull request, so the site's GitHub Actions tests start; GitHub doesn't start workflows for pushes or pull requests made with the workflow's own token. Without it, open the package pull requests by hand from the report, and the site's GitHub Actions tests don't run on their own (CircleCI still builds the branch). |
 | `SLACK_WEBHOOK_URL` | Optional. Slack messages. |
 | `STANFORD_ENCRYPT` | Optional. Set as an environment variable for sites whose settings need it. |
 | `TOOLS_TOKEN` | Only if this repository is private: read access to it. |
@@ -76,7 +87,7 @@ repository's variables, so the caller doesn't pass them.
 
 | Variable | Does |
 |---|---|
-| `CONFIG_PR_ASSIGNEE` | Optional. GitHub login (or several, comma-separated) to assign the package config pull requests to, including existing ones a later run comments on. If the person can't be assigned in that repository, the run only warns. |
+| `CONFIG_PR_ASSIGNEE` | Optional. GitHub login (or several, comma-separated) to assign the pull requests to (the hotfix pull request and the config ones), including existing ones a later run comments on. If the person can't be assigned in that repository, the run only warns. |
 
 ## Multisites
 
@@ -93,7 +104,11 @@ config an update changes is reverted unless the sync directory has it too. For
 each changed sync directory:
 
 - **Committed in the site repository:** the exported change is committed with
-  the hotfix.
+  the hotfix. Because `security/<version>` is never merged back, one pull
+  request with only the config changes (every such directory together) is also
+  opened against the site repository's default branch. It's built on the tip of
+  that branch, or on the commit production runs if it conflicts. Merge it
+  before the site's next regular release.
 - **Inside a composer package** (for example an install profile): the change
   ships as `patches/security/<package>-config-<version>.patch`, listed under
   `extra.patches` in `composer.json`. A pull request with the same change is
@@ -127,5 +142,6 @@ All in `scripts/`; the workflow copies them out of the workspace before running.
 | `find-production.sh` | Lists production tags and the git URLs that run them, as JSON. |
 | `security-update.sh` | Audits `composer.lock` and updates the fewest packages. Safe to run locally on a copy of a `composer.json`/`composer.lock` pair. |
 | `test-update.sh` | Installs, updates and exports test sites. **Don't run it locally:** it reinstalls sites and wipes their databases. |
-| `config-pr.sh` | Opens the package config pull requests. |
+| `config-pr.sh` | Opens the config pull requests: one per package, and one in the site repository for config committed there. |
+| `hotfix-pr.sh` | Opens the pull request from `security/<version>` to the default branch. |
 | `lib.sh` | Shared helpers (reading `drush/drush.yml`, Slack escaping). |

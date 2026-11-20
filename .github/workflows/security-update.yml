@@ -41,18 +41,23 @@
 #        hooks, and export the config before and after.
 #     e. Ship config the updates change, because production's `drush deploy`
 #        imports the sync directory right after the updates and would revert
-#        it. A sync directory committed here gets the change committed. One
-#        in a composer package (an install profile) gets a patch under
+#        it. A sync directory committed here gets the change committed, plus
+#        one pull request for all of them against this repository's default
+#        branch, since security/<version> isn't merged back. One in a
+#        composer package (an install profile) gets a patch under
 #        patches/security/ listed in composer.json, plus a pull request to the
-#        package (scripts/config-pr.sh). Merge it before the next release,
-#        then drop the patch.
+#        package. Both come from scripts/config-pr.sh. Merge them before the
+#        next release, then drop any patch.
 #     f. Commit everything as the hotfix version on security/<version>, with
 #        Production-Ref and Security-Fingerprint trailers for step c. Push
 #        it, and refs/security/<version>, which keeps the source reachable if
-#        the branch is deleted and doesn't trigger tag-based CI.
+#        the branch is deleted and doesn't trigger tag-based CI. The push uses
+#        CONFIG_PR_TOKEN when it can, so the site's `on: push` workflows run.
 #     g. Build with `drush sws:artifact:deploy` and push the tag
 #        YYYY-MM-DD_<version> to the git URL of every application that runs
-#        the production tag.
+#        the production tag. Then open a pull request from
+#        security/<version> to the default branch (scripts/hotfix-pr.sh), to
+#        review the composer changes and run the site's tests.
 #     h. Post to Slack: the tag, applications, updated dependencies, database
 #        updates and config pull requests, or the step that failed.
 #
@@ -68,8 +73,12 @@
 # - CI settings that reach the job's MySQL service. It accepts both
 #   conventions in use: root with no password on 127.0.0.1, and
 #   drupal/drupal on the host "mysql". The database is "drupal".
-# - The caller grants `contents: write` (security/* branches) and uses
-#   `secrets: inherit`, or passes the secrets below.
+# - The caller grants `contents: write` (security/* branches) and
+#   `pull-requests: write` (config pull requests in its own repository), and
+#   uses `secrets: inherit`, or passes the secrets below. Pull requests
+#   opened with the workflow token also need "Allow GitHub Actions to create
+#   and approve pull requests" in the repository's or organization's Actions
+#   settings.
 #
 # Secrets (all optional except the ones the chosen ref-source needs)
 # -------------------------------------------------------------------
@@ -79,8 +88,11 @@
 #                           Cloud Platform API credentials (ref-source cloud).
 #   ACSF_USER, ACSF_KEY     Site Factory API credentials (ref-source acsf).
 #   CONFIG_PR_TOKEN         Contents and pull request write access to the
-#                           packages that hold config (e.g. install profiles).
-#                           Without it, open those pull requests by hand.
+#                           packages that hold config (e.g. install profiles)
+#                           and to the site repository. Without it, open the
+#                           package pull requests by hand; the site branch and
+#                           pull request fall back to the workflow token, which
+#                           doesn't start GitHub Actions workflows.
 #   SLACK_WEBHOOK_URL       "Ready to deploy" and failure messages.
 #   STANFORD_ENCRYPT        Passed to the site as an environment variable, for
 #                           sites whose settings need it.
@@ -481,7 +493,7 @@ jobs:
             if [[ "$(jq -r .mode "$meta")" == repo ]]; then
               git apply -p1 "$patch"
               git add -A "$sync_dir"
-              echo "- $sync_dir: exported config committed." >> "$REPORT_DIR/config-notes.txt"
+              echo "- $sync_dir: committed with the hotfix. A pull request brings it to the default branch; merge it before the next release." >> "$REPORT_DIR/config-notes.txt"
             else
               package=$(jq -r .package "$meta")
               patch_file=$(jq -r .patch_file "$meta")
@@ -546,20 +558,33 @@ jobs:
           git clean -q -d -f
 
       # Step 2f. Before the artifact, so every Acquia tag's source exists here.
+      # Pushed with CONFIG_PR_TOKEN when it's set: GitHub doesn't start
+      # workflows (such as a site's `on: push` tests) for pushes made with the
+      # workflow's own token. CircleCI builds either way.
       - name: Push the source branch
         id: push_source
         if: steps.update.outputs.result == 'fixed' && !steps.version.outputs.skip && !env.DRY_RUN
         env:
           VERSION: ${{ steps.version.outputs.version }}
           REBUILD: ${{ steps.version.outputs.rebuild }}
+          GH_TOKEN: ${{ secrets.CONFIG_PR_TOKEN }}
         run: |
-          if [[ -n "$REBUILD" ]]; then
-            # refs/security/$VERSION already holds this commit; restore the
-            # branch in case it was deleted.
-            git push origin "HEAD:refs/heads/security/$VERSION"
+          refs=("HEAD:refs/heads/security/$VERSION")
+          # On a rebuild, refs/security/$VERSION already holds this commit;
+          # the branch is restored in case it was deleted.
+          [[ -n "$REBUILD" ]] || refs+=("HEAD:refs/security/$VERSION")
+          if [[ -n "$GH_TOKEN" ]]; then
+            # An empty extraheader drops the checkout's workflow-token header,
+            # so gh supplies GH_TOKEN instead.
+            if git -c http.https://github.com/.extraheader= -c credential.helper= -c 'credential.helper=!gh auth git-credential' \
+                push "https://github.com/$GITHUB_REPOSITORY.git" "${refs[@]}"; then
+              exit 0
+            fi
+            echo "::warning::CONFIG_PR_TOKEN can't push to $GITHUB_REPOSITORY; pushing with the workflow token, so GitHub Actions tests won't start on their own."
           else
-            git push origin "HEAD:refs/heads/security/$VERSION" "HEAD:refs/security/$VERSION"
+            echo "::warning::CONFIG_PR_TOKEN isn't set; pushing with the workflow token, so GitHub Actions tests won't start on their own."
           fi
+          git push origin "${refs[@]}"
 
       # Step 2g. Exports the commit with git archive, runs composer install
       # --no-dev (applying patches) and the post-build script from
@@ -586,21 +611,44 @@ jobs:
       # Step 2e. After the artifact push, so the pull requests can name the tag.
       - name: Open config pull requests
         id: config_pr
-        if: steps.sitetest.outputs.package_configs > 0 && !env.DRY_RUN
+        if: steps.sitetest.outputs.config_dirs > 0 && !env.DRY_RUN
         env:
-          GH_TOKEN: ${{ secrets.CONFIG_PR_TOKEN }}
+          # Package repositories (install profiles). Optional; without it
+          # those pull requests are skipped with a warning.
+          PACKAGE_GH_TOKEN: ${{ secrets.CONFIG_PR_TOKEN }}
+          # This repository, for sync dirs committed here. Needs the caller's
+          # `pull-requests: write` permission.
+          SITE_GH_TOKEN: ${{ github.token }}
+          PROD_SHA: ${{ steps.artifact.outputs.sha }}
           VERSION: ${{ steps.version.outputs.version }}
           TAG: ${{ steps.version.outputs.tag }}
           # Optional GitHub login(s), comma-separated, to assign the pull
           # requests to. A reusable workflow reads variables from the calling
           # repository, so set it there or on its organization.
           PR_ASSIGNEE: ${{ vars.CONFIG_PR_ASSIGNEE }}
+        run: bash "$TOOLS/scripts/config-pr.sh" "$REPORT_DIR" "$VERSION" "$TAG"
+
+      # Step 2g2. A pull request from security/<version> to the default
+      # branch, to review the composer changes and run the site's tests.
+      # After the config pull requests, so it can link them. Opened with
+      # CONFIG_PR_TOKEN when it can be, so `pull_request` workflows start.
+      - name: Open the hotfix pull request
+        id: hotfix_pr
+        # Even if a config pull request failed: the branch and tag exist.
+        if: ${{ !cancelled() && steps.push_source.outcome == 'success' && steps.build.outcome == 'success' }}
+        env:
+          PAT: ${{ secrets.CONFIG_PR_TOKEN }}
+          # Needs the caller's `pull-requests: write` permission.
+          SITE_GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          PR_ASSIGNEE: ${{ vars.CONFIG_PR_ASSIGNEE }}
         run: |
-          if [[ -z "$GH_TOKEN" ]]; then
-            echo "::warning::CONFIG_PR_TOKEN isn't set; open the package pull requests by hand from the config patches in the report."
+          if [[ -n "$PAT" ]] && GH_TOKEN="$PAT" bash "$TOOLS/scripts/hotfix-pr.sh" "$REPORT_DIR" "$VERSION" "$TAG"; then
             exit 0
           fi
-          bash "$TOOLS/scripts/config-pr.sh" "$REPORT_DIR" "$VERSION" "$TAG"
+          [[ -z "$PAT" ]] || echo "::warning::Couldn't open the pull request with CONFIG_PR_TOKEN; using the workflow token, so pull_request workflows won't start on their own."
+          GH_TOKEN="$SITE_GH_TOKEN" bash "$TOOLS/scripts/hotfix-pr.sh" "$REPORT_DIR" "$VERSION" "$TAG"
 
       # Step 2h.
       - name: Notify Slack
@@ -633,6 +681,9 @@ jobs:
           fi
           if [[ -s "$REPORT_DIR/config-prs.txt" ]]; then
             updates+=$'\n'"Merge before the next release: $(sort -u "$REPORT_DIR/config-prs.txt" | awk '{ printf "%s<%s|%s>", sep, $2, $1; sep = ", " }')"
+          fi
+          if [[ -s "$REPORT_DIR/hotfix-pr.txt" ]]; then
+            updates+=$'\n'"Tests: <$(cat "$REPORT_DIR/hotfix-pr.txt")|hotfix pull request>"
           fi
           jq -n \
             --arg tag "$TAG" \
@@ -676,6 +727,7 @@ jobs:
             ${{ steps.push_source.outcome }} pushing the source branch
             ${{ steps.build.outcome }} building and pushing the Acquia artifact
             ${{ steps.config_pr.outcome }} opening the config pull requests
+            ${{ steps.hotfix_pr.outcome }} opening the hotfix pull request
             ${{ steps.notify.outcome }} sending the Slack notification
         run: |
           if [[ -z "$SLACK_WEBHOOK_URL" ]]; then
@@ -768,6 +820,9 @@ jobs:
                   echo "### Ready to deploy"
                   echo "- Acquia tag: \`$TAG\`, pushed to: $APPS"
                   echo "- Source branch: [\`security/$VERSION\`]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/tree/security/$VERSION)"
+                  if [[ -s "$REPORT_DIR/hotfix-pr.txt" ]]; then
+                    echo "- Hotfix pull request (tests): $(cat "$REPORT_DIR/hotfix-pr.txt")"
+                  fi
                   if [[ -s "$REPORT_DIR/config-prs.txt" ]]; then
                     sort -u "$REPORT_DIR/config-prs.txt" | awk '{ printf "- %s config pull request: %s\n", $1, $2 }'
                   fi
