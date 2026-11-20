@@ -676,8 +676,13 @@ jobs:
           else
             updates=":white_check_mark: No database updates."
           fi
+          # Always say whether config changes, like the database updates.
           if [[ -s "$REPORT_DIR/config-notes.txt" ]]; then
-            updates+=$'\n'":warning: *Config changed by the updates:*"$'\n'"$(sed 's/^- /• /' "$REPORT_DIR/config-notes.txt" | slack_escape)"
+            dirs=$(grep -c . "$REPORT_DIR/config-notes.txt")
+            (( dirs == 1 )) && dirs+=" config directory" || dirs+=" config directories"
+            updates+=$'\n'":warning: *Configuration changes required ($dirs):*"$'\n'"$(sed 's/^- /• /' "$REPORT_DIR/config-notes.txt" | slack_escape)"
+          else
+            updates+=$'\n'":white_check_mark: No configuration changes."
           fi
           if [[ -s "$REPORT_DIR/config-prs.txt" ]]; then
             updates+=$'\n'"Merge before the next release: $(sort -u "$REPORT_DIR/config-prs.txt" | awk '{ printf "%s<%s|%s>", sep, $2, $1; sep = ", " }')"
